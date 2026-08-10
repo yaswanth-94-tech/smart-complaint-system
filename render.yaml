@@ -17,7 +17,8 @@ services:
         fromService:
           type: web
           name: scms-frontend
-          property: url
+          property: host
+          prefix: https://
 
   # 2. React Frontend Static Site
   - type: web
@@ -35,7 +36,8 @@ services:
         fromService:
           type: web
           name: scms-backend
-          property: url
+          property: host
+          prefix: https://
           postfix: /api
       - key: VITE_FIREBASE_API_KEY
         sync: false

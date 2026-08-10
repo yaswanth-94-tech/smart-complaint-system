@@ -45,5 +45,7 @@ services:
         value: scms-hackathon
       - key: VITE_FIREBASE_STORAGE_BUCKET
         value: scms-hackathon.firebasestorage.app
-      - key: VITE_FIREBASE_MESSAGING_SENDER_ID: "67897379992"
-      - key: VITE_FIREBASE_APP_ID: "1:67897379992:web:d596aedcfc7af1f03514ed"
+      - key: VITE_FIREBASE_MESSAGING_SENDER_ID
+        value: "67897379992"
+      - key: VITE_FIREBASE_APP_ID
+        value: "1:67897379992:web:d596aedcfc7af1f03514ed"

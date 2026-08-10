@@ -1,9 +1,10 @@
-# Render Blueprint for SCMS (Deploys Frontend & Backend at once)
+# Render Blueprint for SCMS (100% FREE Tier Deployment)
 services:
-  # 1. Express Backend Web Service
+  # 1. Express Backend Web Service (FREE Tier)
   - type: web
     name: scms-backend
     env: node
+    plan: free
     rootDir: backend
     buildCommand: npm install && npm run build
     startCommand: node dist/index.js
@@ -20,10 +21,11 @@ services:
           property: host
           prefix: https://
 
-  # 2. React Frontend Static Site
+  # 2. React Frontend Static Site (FREE Tier)
   - type: web
     name: scms-frontend
     env: static
+    plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist

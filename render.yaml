@@ -21,11 +21,10 @@ services:
           property: host
           prefix: https://
 
-  # 2. React Frontend Static Site (FREE Tier)
+  # 2. React Frontend Static Site (FREE by default in Render)
   - type: web
     name: scms-frontend
     env: static
-    plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist

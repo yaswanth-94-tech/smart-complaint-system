@@ -13,17 +13,7 @@ const allowedOrigins = [
 ].filter(Boolean) as string[];
 
 // Configure CORS for dev and production frontend
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
-        return callback(null, true);
-      }
-      return callback(null, true);
-    },
-    credentials: true,
-  })
-);
+app.use(cors({ origin: true, credentials: true }));
 
 app.use(express.json({ limit: '15mb' }));
 

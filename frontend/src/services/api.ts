@@ -1,19 +1,21 @@
 const getApiBaseUrl = (): string => {
+  const envUrl = import.meta.env.VITE_API_URL;
+
   if (typeof window !== 'undefined') {
     const hostname = window.location.hostname;
     const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
 
-    if (!isLocal) {
-      // In production (e.g. Render)
-      const envUrl = import.meta.env.VITE_API_URL;
-      if (envUrl && !envUrl.includes('localhost')) {
-        return envUrl;
-      }
-      return 'https://scms-backend.onrender.com/api';
+    if (isLocal) {
+      return envUrl || 'http://localhost:5000/api';
     }
   }
 
-  return import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+  if (envUrl && envUrl.trim().length > 0 && !envUrl.includes('localhost')) {
+    return envUrl;
+  }
+
+  // Production fallback: Use relative /api or default
+  return envUrl || '/api';
 };
 
 export const API_BASE_URL = getApiBaseUrl();
@@ -88,8 +90,17 @@ export interface AnalyzeImageResponse {
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   if (!text || text.trim().length === 0) {
-    throw new Error(`Server returned empty response (HTTP ${response.status})`);
+    throw new Error(
+      `Server returned empty response (HTTP ${response.status}). Please check VITE_API_URL in Render frontend environment variables.`
+    );
   }
+
+  if (text.trim().startsWith('<')) {
+    throw new Error(
+      `Server returned HTML instead of JSON (HTTP ${response.status}). Please check VITE_API_URL in Render frontend environment variables.`
+    );
+  }
+
   try {
     return JSON.parse(text) as T;
   } catch {

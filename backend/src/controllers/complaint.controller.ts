@@ -10,7 +10,17 @@ import { firestoreDb } from '../config/firebase.config';
 async function fetchActiveComplaintsFromBackend(): Promise<ExistingComplaintSummary[]> {
   if (!firestoreDb) return [];
   try {
-    const snapshot = await firestoreDb.collection('complaints').limit(50).get();
+    const snapshot = await firestoreDb
+      .collection('complaints')
+      .limit(50)
+      .get()
+      .catch((err) => {
+        console.warn('Backend Firestore fetch notice (ADC missing on local dev):', err.message);
+        return null;
+      });
+
+    if (!snapshot) return [];
+
     const results: ExistingComplaintSummary[] = [];
     snapshot.forEach((doc: any) => {
       const data = doc.data();
@@ -24,8 +34,8 @@ async function fetchActiveComplaintsFromBackend(): Promise<ExistingComplaintSumm
       }
     });
     return results;
-  } catch (err) {
-    console.warn('Backend Firestore candidate fetch notice:', err);
+  } catch (err: any) {
+    console.warn('Backend Firestore candidate fetch notice:', err.message || err);
     return [];
   }
 }

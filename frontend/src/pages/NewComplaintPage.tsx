@@ -5,6 +5,7 @@ import Navigation from '../components/Navigation';
 import {
   analyzeComplaint,
   checkDuplicateComplaints,
+  getLocalSmartClassification,
   AIAnalysisData,
   DuplicateMatchItem,
 } from '../services/api';
@@ -80,14 +81,20 @@ export function NewComplaintPage() {
     setCheckingDuplicates(true);
 
     try {
-      // 1. Text Analysis
-      const textResponse = await analyzeComplaint({
-        title: title.trim(),
-        description: description.trim(),
-        location: location.trim(),
-      });
+      // 1. Text Analysis with Smart Fallback
+      let aiData: AIAnalysisData;
+      try {
+        const textResponse = await analyzeComplaint({
+          title: title.trim(),
+          description: description.trim(),
+          location: location.trim(),
+        });
+        aiData = textResponse.data;
+      } catch (apiErr) {
+        console.warn('Backend API analysis fallback to smart classifier:', apiErr);
+        aiData = getLocalSmartClassification(title.trim(), description.trim(), location.trim());
+      }
 
-      const aiData = textResponse.data;
       setAiAnalysis(aiData);
 
       if (CATEGORIES.includes(aiData.category as ComplaintCategory)) {
@@ -100,7 +107,7 @@ export function NewComplaintPage() {
         setDepartment(aiData.department);
       }
 
-      // 2. Duplicate Detection
+      // 2. Duplicate Detection with Fallback
       try {
         const existing = await getAllComplaints();
         const activeExisting = existing.filter((c) => c.status !== 'RESOLVED' && c.status !== 'REJECTED');
@@ -117,17 +124,22 @@ export function NewComplaintPage() {
           })),
         });
 
-        if (dupResponse.data.hasSimilarComplaints) {
+        if (dupResponse.data?.hasSimilarComplaints) {
           setDuplicateMatches(dupResponse.data.similarComplaints);
         } else {
           setDuplicateMatches([]);
         }
       } catch (dupErr) {
         console.warn('Duplicate check warning:', dupErr);
+        setDuplicateMatches([]);
       }
     } catch (err: any) {
-      console.error('AI Analysis Error:', err);
-      setError(err.message || 'Failed to analyze complaint with AI.');
+      console.warn('Analysis handler warning, executing smart classifier:', err);
+      const fallback = getLocalSmartClassification(title.trim(), description.trim(), location.trim());
+      setAiAnalysis(fallback);
+      setCategory(fallback.category as ComplaintCategory);
+      setPriority(fallback.priority as ComplaintPriority);
+      setDepartment(fallback.department);
     } finally {
       setAnalyzingText(false);
       setCheckingDuplicates(false);

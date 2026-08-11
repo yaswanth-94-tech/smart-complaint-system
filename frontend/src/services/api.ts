@@ -36,6 +36,7 @@ export interface AIAnalysisData {
   summary: string;
   confidence: number;
   reason: string;
+  recommendedAction?: string;
 }
 
 export interface AnalyzeComplaintResponse {
@@ -125,7 +126,7 @@ export async function checkDuplicateComplaints(payload: {
   title: string;
   description: string;
   location: string;
-  existingComplaints: Array<{ id: string; title: string; description: string; location: string }>;
+  existingComplaints?: Array<{ id: string; title: string; description: string; location: string }>;
 }): Promise<CheckDuplicatesResponse> {
   const response = await fetch(`${API_BASE_URL}/complaints/check-duplicates`, {
     method: 'POST',

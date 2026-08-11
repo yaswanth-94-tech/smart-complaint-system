@@ -199,6 +199,15 @@ export function ComplaintDetailPage() {
                       "{complaint.aiAnalysis.reason}"
                     </p>
                   </div>
+
+                  {complaint.aiAnalysis.recommendedAction && (
+                    <div>
+                      <span className="text-slate-400 block mb-0.5">Recommended Action</span>
+                      <p className="text-slate-200 bg-indigo-950/40 p-3 rounded border border-indigo-900 font-medium">
+                        {complaint.aiAnalysis.recommendedAction}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

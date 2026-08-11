@@ -5,45 +5,15 @@ import Navigation from '../components/Navigation';
 import {
   analyzeComplaint,
   checkDuplicateComplaints,
-  getLocalSmartClassification,
   AIAnalysisData,
   CheckDuplicatesResponse,
 } from '../services/api';
-import { createComplaint, getAllComplaints, updateComplaintStatus } from '../services/complaint.service';
+import { createComplaint, updateComplaintStatus } from '../services/complaint.service';
 import {
   ComplaintCategory,
   ComplaintPriority,
   Complaint,
 } from '../types/complaint';
-
-const CATEGORIES: ComplaintCategory[] = [
-  'Wi-Fi',
-  'Classroom',
-  'Laboratory',
-  'Hostel',
-  'Transportation',
-  'Washroom',
-  'Electrical',
-  'Plumbing',
-  'Security',
-  'Cleanliness',
-  'Other',
-];
-
-const PRIORITIES: ComplaintPriority[] = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
-
-const DEPARTMENTS = [
-  'IT Department',
-  'Electrical Maintenance',
-  'Plumbing/Maintenance',
-  'Hostel Administration',
-  'Transport Department',
-  'Laboratory Maintenance',
-  'Civil Maintenance',
-  'Sanitation Department',
-  'Security Department',
-  'Other',
-];
 
 export function NewComplaintPage() {
   const { user, userProfile } = useAuth();
@@ -64,13 +34,33 @@ export function NewComplaintPage() {
   const [appendNoteText, setAppendNoteText] = useState('');
   const [isAppendingNote, setIsAppendingNote] = useState(false);
 
-  // User confirmed/overridden complaint values
+  // AI determined complaint values
   const [category, setCategory] = useState<ComplaintCategory>('Other');
   const [priority, setPriority] = useState<ComplaintPriority>('MEDIUM');
   const [department, setDepartment] = useState<string>('Other');
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const runAIAnalysisAndDuplicateCheck = async (): Promise<{ aiData: AIAnalysisData; dupData: any }> => {
+    // 1. Classification via Backend AI
+    const textResponse = await analyzeComplaint({
+      title: title.trim(),
+      description: description.trim(),
+      location: location.trim(),
+    });
+    const aiData = textResponse.data;
+
+    // 2. AI Semantic Duplicate Detection via Backend (backend queries Firestore)
+    const dupResponse = await checkDuplicateComplaints({
+      title: title.trim(),
+      description: description.trim(),
+      location: location.trim(),
+    });
+    const dupData = dupResponse.data || null;
+
+    return { aiData, dupData };
+  };
 
   const handleRunAIAnalysis = async () => {
     setError(null);
@@ -84,65 +74,17 @@ export function NewComplaintPage() {
     setOverrideDuplicate(false);
 
     try {
-      // 1. Classification
-      let aiData: AIAnalysisData;
-      try {
-        const textResponse = await analyzeComplaint({
-          title: title.trim(),
-          description: description.trim(),
-          location: location.trim(),
-        });
-        aiData = textResponse.data;
-      } catch (apiErr) {
-        console.warn('Backend API analysis fallback:', apiErr);
-        aiData = getLocalSmartClassification(title.trim(), description.trim(), location.trim());
-      }
-
+      const { aiData, dupData } = await runAIAnalysisAndDuplicateCheck();
       setAiAnalysis(aiData);
-
-      if (CATEGORIES.includes(aiData.category as ComplaintCategory)) {
-        setCategory(aiData.category as ComplaintCategory);
-      }
-      if (PRIORITIES.includes(aiData.priority as ComplaintPriority)) {
-        setPriority(aiData.priority as ComplaintPriority);
-      }
-      if (aiData.department) {
-        setDepartment(aiData.department);
-      }
-
-      // 2. AI Semantic Duplicate Detection
-      try {
-        const existing = await getAllComplaints();
-        const activeExisting = existing.filter((c) => c.status !== 'RESOLVED' && c.status !== 'REJECTED');
-
-        const dupResponse = await checkDuplicateComplaints({
-          title: title.trim(),
-          description: description.trim(),
-          location: location.trim(),
-          existingComplaints: activeExisting.map((c) => ({
-            id: c.id,
-            title: c.title,
-            description: c.description,
-            location: c.location,
-          })),
-        });
-
-        if (dupResponse.data) {
-          setDuplicateResult(dupResponse.data);
-        } else {
-          setDuplicateResult(null);
-        }
-      } catch (dupErr) {
-        console.warn('Duplicate check warning:', dupErr);
-        setDuplicateResult(null);
-      }
+      setCategory(aiData.category as ComplaintCategory);
+      setPriority(aiData.priority as ComplaintPriority);
+      setDepartment(aiData.department);
+      setDuplicateResult(dupData);
     } catch (err: any) {
-      console.warn('Analysis execution warning:', err);
-      const fallback = getLocalSmartClassification(title.trim(), description.trim(), location.trim());
-      setAiAnalysis(fallback);
-      setCategory(fallback.category as ComplaintCategory);
-      setPriority(fallback.priority as ComplaintPriority);
-      setDepartment(fallback.department);
+      console.error('AI Analysis Execution Error:', err);
+      setError(`AI Analysis Error: ${err.message || 'Failed to connect to AI analysis backend'}`);
+      setAiAnalysis(null);
+      setDuplicateResult(null);
     } finally {
       setAnalyzingText(false);
       setCheckingDuplicates(false);
@@ -185,8 +127,34 @@ export function NewComplaintPage() {
       return;
     }
 
+    let currentAiAnalysis = aiAnalysis;
+    let currentDupResult = duplicateResult;
+
+    // Automatically trigger backend AI analysis & duplicate check if not yet executed
+    if (!currentAiAnalysis) {
+      setAnalyzingText(true);
+      setCheckingDuplicates(true);
+      try {
+        const { aiData, dupData } = await runAIAnalysisAndDuplicateCheck();
+        currentAiAnalysis = aiData;
+        currentDupResult = dupData;
+        setAiAnalysis(aiData);
+        setCategory(aiData.category as ComplaintCategory);
+        setPriority(aiData.priority as ComplaintPriority);
+        setDepartment(aiData.department);
+        setDuplicateResult(dupData);
+      } catch (err: any) {
+        setAnalyzingText(false);
+        setCheckingDuplicates(false);
+        setError(`AI Analysis Error: ${err.message || 'Failed to connect to AI analysis backend'}`);
+        return;
+      }
+      setAnalyzingText(false);
+      setCheckingDuplicates(false);
+    }
+
     // Intercept if AI detected a true duplicate and student hasn't clicked "Submit as New Complaint"
-    if (duplicateResult?.isDuplicate && !overrideDuplicate) {
+    if (currentDupResult?.isDuplicate && !overrideDuplicate) {
       setError('AI detected a likely duplicate complaint. Please review the duplicate warning below or click "Submit as New Complaint" to proceed.');
       return;
     }
@@ -200,23 +168,24 @@ export function NewComplaintPage() {
         title: title.trim(),
         description: description.trim(),
         location: location.trim(),
-        category,
-        priority,
-        department,
+        category: currentAiAnalysis ? currentAiAnalysis.category : category,
+        priority: currentAiAnalysis ? currentAiAnalysis.priority : priority,
+        department: currentAiAnalysis ? currentAiAnalysis.department : department,
         status: 'SUBMITTED',
         imageUrl: null,
-        aiAnalysis: aiAnalysis
+        aiAnalysis: currentAiAnalysis
           ? {
-              category: aiAnalysis.category,
-              priority: aiAnalysis.priority,
-              department: aiAnalysis.department,
-              summary: aiAnalysis.summary,
-              confidence: aiAnalysis.confidence,
-              reason: aiAnalysis.reason,
+              category: currentAiAnalysis.category,
+              priority: currentAiAnalysis.priority,
+              department: currentAiAnalysis.department,
+              summary: currentAiAnalysis.summary,
+              confidence: currentAiAnalysis.confidence,
+              reason: currentAiAnalysis.reason,
+              recommendedAction: currentAiAnalysis.recommendedAction,
             }
           : null,
-        duplicateOf: duplicateResult?.duplicateComplaintId || null,
-        duplicateGroupId: duplicateResult?.duplicateComplaintId ? `group_${duplicateResult.duplicateComplaintId}` : null,
+        duplicateOf: currentDupResult?.duplicateComplaintId || null,
+        duplicateGroupId: currentDupResult?.duplicateComplaintId ? `group_${currentDupResult.duplicateComplaintId}` : null,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
@@ -240,7 +209,7 @@ export function NewComplaintPage() {
         <div className="border-b border-slate-800 pb-4">
           <h1 className="text-2xl font-bold text-slate-50">Submit a New Campus Complaint</h1>
           <p className="text-sm text-slate-400">
-            Describe the problem and let our AI system route it to the right department.
+            Describe the problem and let our AI system automatically route it to the right department.
           </p>
         </div>
 
@@ -309,7 +278,7 @@ export function NewComplaintPage() {
                 {analyzingText ? (
                   <>
                     <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-                    <span>Analyzing & Checking Duplicates...</span>
+                    <span>Analyzing & Checking Duplicates via AI...</span>
                   </>
                 ) : (
                   <span>✨ Analyze & Check Duplicates with Gemini AI</span>
@@ -345,14 +314,13 @@ export function NewComplaintPage() {
 
                 <div>
                   <span className="text-amber-400 font-bold uppercase tracking-wider text-[11px] block">
-                    Why?
+                    Why:
                   </span>
                   <p className="p-3 rounded bg-amber-900/30 border border-amber-800 text-amber-100 italic leading-relaxed">
                     "{duplicateResult.reason}"
                   </p>
                 </div>
 
-                {/* Additional Information Input if student wants to append */}
                 <div className="pt-2">
                   <label className="block text-[11px] font-semibold text-slate-300 mb-1">
                     Add note to existing complaint (Optional):
@@ -405,87 +373,72 @@ export function NewComplaintPage() {
             </div>
           )}
 
-          {/* AI Result Review Card */}
+          {/* AI CLASSIFICATION Display */}
           {aiAnalysis && (
-            <div className="bg-slate-800 border border-indigo-500/40 rounded-xl p-5 shadow-xl space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-700 pb-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
-                  Gemini AI Suggested Classification
-                </span>
-                <span className="text-xs px-2 py-0.5 rounded bg-indigo-950 border border-indigo-700 text-indigo-300 font-mono font-bold">
-                  {Math.round(aiAnalysis.confidence * 100)}% Confidence
+            <div className="bg-slate-800 border-2 border-indigo-500/50 rounded-xl p-6 shadow-xl space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-700 pb-3">
+                <div className="flex items-center space-x-2">
+                  <span className="px-2 py-0.5 rounded bg-indigo-600 text-white font-black text-[10px] uppercase tracking-wider">
+                    AI Generated
+                  </span>
+                  <h3 className="text-sm font-bold uppercase tracking-wider text-indigo-300">
+                    AI CLASSIFICATION
+                  </h3>
+                </div>
+                <span className="text-xs px-2.5 py-1 rounded bg-indigo-950 border border-indigo-700 text-indigo-300 font-mono font-bold">
+                  AI Confidence: {Math.round((aiAnalysis.confidence || 0.9) * 100)}%
                 </span>
               </div>
-              <p className="text-xs text-slate-300 italic">"{aiAnalysis.reason}"</p>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-700">
+                  <span className="text-slate-400 block mb-0.5 font-semibold">Category</span>
+                  <span className="font-bold text-slate-100 text-sm">{aiAnalysis.category}</span>
+                </div>
+                <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-700">
+                  <span className="text-slate-400 block mb-0.5 font-semibold">Priority</span>
+                  <span className="font-bold text-amber-400 text-sm">{aiAnalysis.priority}</span>
+                </div>
+                <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-700">
+                  <span className="text-slate-400 block mb-0.5 font-semibold">Assigned Department</span>
+                  <span className="font-bold text-slate-100 text-sm">{aiAnalysis.department}</span>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-2 text-xs">
+                <div>
+                  <span className="text-indigo-400 font-bold uppercase tracking-wider text-[11px] block mb-1">
+                    Why?
+                  </span>
+                  <p className="p-3 rounded bg-slate-900/60 border border-slate-700 text-slate-200 leading-relaxed italic">
+                    "{aiAnalysis.reason}"
+                  </p>
+                </div>
+
+                {aiAnalysis.recommendedAction && (
+                  <div>
+                    <span className="text-indigo-400 font-bold uppercase tracking-wider text-[11px] block mb-1">
+                      Recommended Action:
+                    </span>
+                    <p className="p-3 rounded bg-indigo-950/40 border border-indigo-900 text-indigo-100 font-medium leading-relaxed">
+                      {aiAnalysis.recommendedAction}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
-          {/* Categorization & Department Review */}
-          <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 shadow-xl space-y-4">
-            <h2 className="text-base font-semibold text-slate-200 border-b border-slate-700 pb-2">
-              2. Classification & Department Assignment
-            </h2>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Category
-                </label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value as ComplaintCategory)}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  {CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Priority Level
-                </label>
-                <select
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value as ComplaintPriority)}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  {PRIORITIES.map((prio) => (
-                    <option key={prio} value={prio}>
-                      {prio}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Assigned Department
-                </label>
-                <select
-                  value={department}
-                  onChange={(e) => setDepartment(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  {DEPARTMENTS.map((dept) => (
-                    <option key={dept} value={dept}>
-                      {dept}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || analyzingText || checkingDuplicates}
             className="w-full py-3.5 px-6 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-bold rounded-xl shadow-lg hover:shadow-indigo-500/20 transition-all text-base disabled:opacity-50"
           >
-            {submitting ? 'Submitting Complaint...' : 'Confirm & Submit Complaint'}
+            {submitting
+              ? 'Submitting Complaint...'
+              : analyzingText || checkingDuplicates
+              ? 'Running AI Analysis...'
+              : 'Submit Complaint'}
           </button>
         </form>
       </main>

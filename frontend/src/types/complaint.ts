@@ -27,6 +27,7 @@ export interface AIAnalysisResult {
   summary: string;
   confidence: number;
   reason: string;
+  recommendedAction?: string;
 }
 
 export interface Complaint {

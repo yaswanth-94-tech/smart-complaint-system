@@ -3,7 +3,32 @@ import {
   analyzeComplaintWithGemini,
   checkDuplicateComplaintsWithGemini,
   analyzeComplaintImageWithGemini,
+  ExistingComplaintSummary,
 } from '../services/gemini.service';
+import { firestoreDb } from '../config/firebase.config';
+
+async function fetchActiveComplaintsFromBackend(): Promise<ExistingComplaintSummary[]> {
+  if (!firestoreDb) return [];
+  try {
+    const snapshot = await firestoreDb.collection('complaints').limit(50).get();
+    const results: ExistingComplaintSummary[] = [];
+    snapshot.forEach((doc: any) => {
+      const data = doc.data();
+      if (data.status !== 'RESOLVED' && data.status !== 'REJECTED') {
+        results.push({
+          id: doc.id,
+          title: data.title || '',
+          description: data.description || '',
+          location: data.location || '',
+        });
+      }
+    });
+    return results;
+  } catch (err) {
+    console.warn('Backend Firestore candidate fetch notice:', err);
+    return [];
+  }
+}
 
 export const analyzeComplaint = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -41,7 +66,7 @@ export const analyzeComplaint = async (req: Request, res: Response): Promise<voi
     console.error('Error in analyzeComplaint controller:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to analyze complaint',
+      error: error.message || 'Failed to analyze complaint',
       message: error.message || 'Internal server error',
     });
   }
@@ -59,13 +84,21 @@ export const checkDuplicates = async (req: Request, res: Response): Promise<void
       return;
     }
 
+    let candidates: ExistingComplaintSummary[] = Array.isArray(existingComplaints) && existingComplaints.length > 0
+      ? existingComplaints
+      : [];
+
+    if (candidates.length === 0) {
+      candidates = await fetchActiveComplaintsFromBackend();
+    }
+
     const result = await checkDuplicateComplaintsWithGemini(
       {
         title: title.trim(),
         description: typeof description === 'string' ? description.trim() : '',
         location: typeof location === 'string' ? location.trim() : '',
       },
-      Array.isArray(existingComplaints) ? existingComplaints : []
+      candidates
     );
 
     res.status(200).json({
@@ -76,7 +109,7 @@ export const checkDuplicates = async (req: Request, res: Response): Promise<void
     console.error('Error in checkDuplicates controller:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to check duplicate complaints',
+      error: error.message || 'Failed to check duplicate complaints',
       message: error.message || 'Internal server error',
     });
   }

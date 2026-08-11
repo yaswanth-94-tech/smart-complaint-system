@@ -47,6 +47,7 @@ export interface AIAnalysisResponse {
   summary: string;
   confidence: number;
   reason: string;
+  recommendedAction: string;
 }
 
 export interface ExistingComplaintSummary {
@@ -100,48 +101,8 @@ export async function analyzeComplaintWithGemini(
 ): Promise<AIAnalysisResponse> {
   const apiKey = config.geminiApiKey;
 
-  const getFallbackResult = (reasonMsg: string): AIAnalysisResponse => {
-    const text = `${input.title} ${input.description} ${input.location}`.toLowerCase();
-
-    let category: CategoryType = 'Other';
-    let department: DepartmentType = 'Other';
-    let priority: PriorityType = 'MEDIUM';
-
-    if (text.includes('wifi') || text.includes('wi-fi') || text.includes('internet') || text.includes('network')) {
-      category = 'Wi-Fi';
-      department = 'IT Department';
-      priority = text.includes('outage') || text.includes('down') ? 'HIGH' : 'MEDIUM';
-    } else if (text.includes('light') || text.includes('fan') || text.includes('electrical') || text.includes('power') || text.includes('spark') || text.includes('circuit')) {
-      category = 'Electrical';
-      department = 'Electrical Maintenance';
-      priority = text.includes('spark') || text.includes('smoke') || text.includes('short') ? 'CRITICAL' : 'HIGH';
-    } else if (text.includes('water') || text.includes('pipe') || text.includes('leak') || text.includes('tap') || text.includes('washroom')) {
-      category = text.includes('washroom') ? 'Washroom' : 'Plumbing';
-      department = 'Plumbing/Maintenance';
-      priority = text.includes('flood') || text.includes('overflow') || text.includes('burst') ? 'CRITICAL' : 'HIGH';
-    } else if (text.includes('hostel') || text.includes('room')) {
-      category = 'Hostel';
-      department = 'Hostel Administration';
-    } else if (text.includes('bus') || text.includes('transport')) {
-      category = 'Transportation';
-      department = 'Transport Department';
-    } else if (text.includes('lab') || text.includes('equipment')) {
-      category = 'Laboratory';
-      department = 'Laboratory Maintenance';
-    }
-
-    return {
-      category,
-      priority,
-      department,
-      summary: `${input.title} reported at ${input.location || 'Campus'}`,
-      confidence: 0.85,
-      reason: reasonMsg,
-    };
-  };
-
   if (!apiKey) {
-    return getFallbackResult('Categorized via intelligent local fallback (GEMINI_API_KEY not configured in backend/.env).');
+    throw new Error('GEMINI_API_KEY is not configured in backend environment variables. Please configure GEMINI_API_KEY on Render.');
   }
 
   try {
@@ -163,9 +124,10 @@ Return a strict JSON object with:
 - department (string)
 - summary (concise 1-sentence summary of the issue)
 - confidence (number between 0.0 and 1.0)
-- reason (short explanation for the classification decisions)`;
+- reason (short explanation for the classification decisions)
+- recommendedAction (specific recommended action for maintenance staff or department to resolve this complaint)`;
 
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-latest'];
+    const modelsToTry = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
     let lastError: any = null;
 
     for (const modelName of modelsToTry) {
@@ -184,8 +146,9 @@ Return a strict JSON object with:
                 summary: { type: Type.STRING },
                 confidence: { type: Type.NUMBER },
                 reason: { type: Type.STRING },
+                recommendedAction: { type: Type.STRING },
               },
-              required: ['category', 'priority', 'department', 'summary', 'confidence', 'reason'],
+              required: ['category', 'priority', 'department', 'summary', 'confidence', 'reason', 'recommendedAction'],
             },
           },
         });
@@ -200,6 +163,7 @@ Return a strict JSON object with:
           confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.9,
           summary: parsed.summary || `${input.title} at ${input.location}`,
           reason: parsed.reason || `Categorized via ${modelName}`,
+          recommendedAction: parsed.recommendedAction || 'Inspect and address reported issue.',
         };
       } catch (e) {
         lastError = e;
@@ -207,8 +171,8 @@ Return a strict JSON object with:
     }
     throw lastError;
   } catch (err: any) {
-    console.error('Gemini API execution warning:', err.message || err);
-    return getFallbackResult(`Fallback result used: ${err.message || 'API issue'}`);
+    console.error('Gemini API execution error:', err.message || err);
+    throw new Error(`AI Analysis failed: ${err.message || 'Gemini API call failed'}`);
   }
 }
 
@@ -294,7 +258,7 @@ export async function checkDuplicateComplaintsWithGemini(
   };
 
   if (!apiKey) {
-    return runFallbackCheck();
+    throw new Error('GEMINI_API_KEY is not configured in backend environment variables. Please configure GEMINI_API_KEY on Render.');
   }
 
   try {
@@ -328,7 +292,8 @@ Return a strict JSON object:
 - hasSimilarComplaints (boolean)
 - similarComplaints (array of objects with complaintId, title, reason, similarityScore, isTrueDuplicate)`;
 
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-latest'];
+    const modelsToTry = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+    let lastError: any = null;
 
     for (const modelName of modelsToTry) {
       try {
@@ -381,14 +346,14 @@ Return a strict JSON object:
           similarComplaints: parsed.similarComplaints || [],
         };
       } catch (e) {
-        // continue to next model
+        lastError = e;
       }
     }
 
-    return runFallbackCheck();
-  } catch (err) {
-    console.error('Duplicate detection warning:', err);
-    return runFallbackCheck();
+    throw lastError;
+  } catch (err: any) {
+    console.error('Duplicate detection error:', err.message || err);
+    throw new Error(`Duplicate detection failed: ${err.message || 'Gemini API call failed'}`);
   }
 }
 
@@ -399,15 +364,7 @@ export async function analyzeComplaintImageWithGemini(
   const apiKey = config.geminiApiKey;
 
   if (!apiKey) {
-    return {
-      detectedIssue: 'Facility problem detected in uploaded photo',
-      category: 'Other',
-      prioritySuggestion: 'MEDIUM',
-      departmentSuggestion: 'Other',
-      confidence: 0.8,
-      reason: 'Photo inspected via vision heuristics (GEMINI_API_KEY not configured in backend/.env).',
-      requiresHumanReview: true,
-    };
+    throw new Error('GEMINI_API_KEY is not configured in backend environment variables. Please configure GEMINI_API_KEY on Render.');
   }
 
   try {
@@ -429,7 +386,8 @@ Return strict JSON:
 - reason (string)
 - requiresHumanReview (boolean)`;
 
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-latest'];
+    const modelsToTry = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+    let lastError: any = null;
 
     for (const modelName of modelsToTry) {
       try {
@@ -485,29 +443,13 @@ Return strict JSON:
           requiresHumanReview: Boolean(parsed.requiresHumanReview),
         };
       } catch (e) {
-        // try next model
+        lastError = e;
       }
     }
 
-    return {
-      detectedIssue: 'Facility issue detected',
-      category: 'Other',
-      prioritySuggestion: 'MEDIUM',
-      departmentSuggestion: 'Other',
-      confidence: 0.75,
-      reason: 'Photo inspected via fallback vision analysis.',
-      requiresHumanReview: true,
-    };
+    throw lastError;
   } catch (err: any) {
-    console.error('Image analysis error:', err);
-    return {
-      detectedIssue: 'Facility issue detected',
-      category: 'Other',
-      prioritySuggestion: 'MEDIUM',
-      departmentSuggestion: 'Other',
-      confidence: 0.7,
-      reason: 'Photo inspected via fallback vision analysis.',
-      requiresHumanReview: true,
-    };
+    console.error('Image analysis error:', err.message || err);
+    throw new Error(`Image analysis failed: ${err.message || 'Gemini API call failed'}`);
   }
 }

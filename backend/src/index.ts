@@ -27,14 +27,24 @@ app.use(
 
 app.use(express.json({ limit: '15mb' }));
 
-// Routes
+// Health Check Endpoints
+app.get('/', (_req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    message: 'Smart Complaint System Backend API is running.',
+  });
+});
+
+app.get('/health', (_req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    message: 'Smart Complaint System Backend API is running.',
+  });
+});
+
+// API Routes
 app.use('/api', healthRoutes);
 app.use('/api/complaints', complaintRoutes);
-
-// Root route
-app.get('/', (_req: Request, res: Response) => {
-  res.send('Smart Complaint System Backend API is running.');
-});
 
 // Start server
 app.listen(config.port, () => {

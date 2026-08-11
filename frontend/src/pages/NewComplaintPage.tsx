@@ -5,12 +5,10 @@ import Navigation from '../components/Navigation';
 import {
   analyzeComplaint,
   checkDuplicateComplaints,
-  analyzeComplaintImage,
   AIAnalysisData,
   DuplicateMatchItem,
-  ImageAnalysisData,
 } from '../services/api';
-import { uploadComplaintImage, createComplaint, getAllComplaints } from '../services/complaint.service';
+import { createComplaint, getAllComplaints } from '../services/complaint.service';
 import {
   ComplaintCategory,
   ComplaintPriority,
@@ -53,9 +51,6 @@ export function NewComplaintPage() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [location, setLocation] = useState('');
-  const [imageFile, setImageFile] = useState<File | null>(null);
-  const [imageBase64, setImageBase64] = useState<string | null>(null);
-  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
 
   // AI Text Analysis state
   const [analyzingText, setAnalyzingText] = useState(false);
@@ -66,10 +61,6 @@ export function NewComplaintPage() {
   const [duplicateMatches, setDuplicateMatches] = useState<DuplicateMatchItem[]>([]);
   const [selectedDuplicateId, setSelectedDuplicateId] = useState<string | null>(null);
 
-  // AI Multimodal Image Analysis state
-  const [analyzingImage, setAnalyzingImage] = useState(false);
-  const [imageAnalysis, setImageAnalysis] = useState<ImageAnalysisData | null>(null);
-
   // User confirmed/overridden complaint values
   const [category, setCategory] = useState<ComplaintCategory>('Other');
   const [priority, setPriority] = useState<ComplaintPriority>('MEDIUM');
@@ -77,23 +68,6 @@ export function NewComplaintPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setImageFile(file);
-      setImagePreviewUrl(URL.createObjectURL(file));
-
-      // Convert to base64 for Gemini vision API
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setImageBase64(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
 
   const handleRunAIAnalysis = async () => {
     setError(null);
@@ -160,41 +134,6 @@ export function NewComplaintPage() {
     }
   };
 
-  const handleRunImageAnalysis = async () => {
-    if (!imageBase64) return;
-
-    setAnalyzingImage(true);
-    setError(null);
-
-    try {
-      const response = await analyzeComplaintImage({
-        imageBase64,
-        context: {
-          title: title.trim(),
-          location: location.trim(),
-        },
-      });
-
-      const imgData = response.data;
-      setImageAnalysis(imgData);
-
-      if (CATEGORIES.includes(imgData.category as ComplaintCategory)) {
-        setCategory(imgData.category as ComplaintCategory);
-      }
-      if (PRIORITIES.includes(imgData.prioritySuggestion as ComplaintPriority)) {
-        setPriority(imgData.prioritySuggestion as ComplaintPriority);
-      }
-      if (imgData.departmentSuggestion) {
-        setDepartment(imgData.departmentSuggestion);
-      }
-    } catch (err: any) {
-      console.error('Image Analysis Error:', err);
-      setError(err.message || 'Failed to analyze uploaded photo.');
-    } finally {
-      setAnalyzingImage(false);
-    }
-  };
-
   const handleSubmitComplaint = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -212,15 +151,6 @@ export function NewComplaintPage() {
     setSubmitting(true);
 
     try {
-      let uploadedImageUrl: string | null = null;
-      if (imageFile) {
-        try {
-          uploadedImageUrl = await uploadComplaintImage(imageFile, user.uid);
-        } catch (storageErr: any) {
-          console.warn('Firebase Storage upload skipped/failed:', storageErr.message || storageErr);
-        }
-      }
-
       const now = new Date().toISOString();
       const complaintData: Omit<Complaint, 'id'> = {
         userId: user.uid,
@@ -231,7 +161,7 @@ export function NewComplaintPage() {
         priority,
         department,
         status: 'SUBMITTED',
-        imageUrl: uploadedImageUrl,
+        imageUrl: null,
         aiAnalysis: aiAnalysis
           ? {
               category: aiAnalysis.category,
@@ -326,43 +256,6 @@ export function NewComplaintPage() {
               />
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                Optional Attachment (Photo)
-              </label>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handleImageChange}
-                className="block w-full text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-700 file:text-slate-200 hover:file:bg-slate-600 transition-colors"
-              />
-              {imagePreviewUrl && (
-                <div className="mt-3 space-y-3">
-                  <img
-                    src={imagePreviewUrl}
-                    alt="Complaint preview"
-                    className="max-h-48 rounded-lg border border-slate-700 object-cover"
-                  />
-
-                  <button
-                    type="button"
-                    onClick={handleRunImageAnalysis}
-                    disabled={analyzingImage}
-                    className="w-full py-2 px-3 bg-purple-900/40 hover:bg-purple-900/60 text-purple-200 border border-purple-700 font-semibold rounded-lg text-xs transition-all flex items-center justify-center space-x-2"
-                  >
-                    {analyzingImage ? (
-                      <>
-                        <div className="w-3.5 h-3.5 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
-                        <span>Analyzing Photo with Gemini Vision...</span>
-                      </>
-                    ) : (
-                      <span>📸 Inspect Photo with Gemini AI Vision</span>
-                    )}
-                  </button>
-                </div>
-              )}
-            </div>
-
             <div className="pt-2">
               <button
                 type="button"
@@ -381,33 +274,6 @@ export function NewComplaintPage() {
               </button>
             </div>
           </div>
-
-          {/* Multimodal Image Analysis Card */}
-          {imageAnalysis && (
-            <div className="bg-purple-950/30 border border-purple-700/60 rounded-xl p-5 shadow-xl space-y-3">
-              <div className="flex items-center justify-between border-b border-purple-800/60 pb-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-purple-300">
-                  📸 Gemini Vision Image Analysis Result
-                </span>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-purple-900 border border-purple-700 text-purple-200 font-mono">
-                  {Math.round(imageAnalysis.confidence * 100)}% Visual Match
-                </span>
-              </div>
-
-              <div className="space-y-1 text-xs">
-                <p className="font-bold text-slate-100">
-                  Detected Issue: <span className="text-purple-300">{imageAnalysis.detectedIssue}</span>
-                </p>
-                <p className="text-slate-300 italic">"{imageAnalysis.reason}"</p>
-
-                {imageAnalysis.requiresHumanReview && (
-                  <div className="mt-2 p-2.5 rounded bg-amber-950/50 border border-amber-800 text-amber-300 text-[11px] flex items-center space-x-2">
-                    <span>⚠️ Safety Recommendation Notice: Image analysis is a recommendation and requires human staff review for safety hazards.</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
 
           {/* AI Duplicate Warning Card */}
           {duplicateMatches.length > 0 && (

@@ -31,11 +31,18 @@ export interface DuplicateMatchItem {
   title: string;
   reason: string;
   similarityScore: number;
+  isTrueDuplicate?: boolean;
 }
 
 export interface CheckDuplicatesResponse {
   success: boolean;
   data: {
+    isDuplicate: boolean;
+    duplicateComplaintId: string | null;
+    confidence: number;
+    reason: string;
+    duplicateTitle?: string | null;
+    duplicateDescription?: string | null;
     hasSimilarComplaints: boolean;
     similarComplaints: DuplicateMatchItem[];
   };

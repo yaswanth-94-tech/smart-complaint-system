@@ -7,9 +7,9 @@ import {
   checkDuplicateComplaints,
   getLocalSmartClassification,
   AIAnalysisData,
-  DuplicateMatchItem,
+  CheckDuplicatesResponse,
 } from '../services/api';
-import { createComplaint, getAllComplaints } from '../services/complaint.service';
+import { createComplaint, getAllComplaints, updateComplaintStatus } from '../services/complaint.service';
 import {
   ComplaintCategory,
   ComplaintPriority,
@@ -59,8 +59,10 @@ export function NewComplaintPage() {
 
   // AI Duplicate Detection state
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
-  const [duplicateMatches, setDuplicateMatches] = useState<DuplicateMatchItem[]>([]);
-  const [selectedDuplicateId, setSelectedDuplicateId] = useState<string | null>(null);
+  const [duplicateResult, setDuplicateResult] = useState<CheckDuplicatesResponse['data'] | null>(null);
+  const [overrideDuplicate, setOverrideDuplicate] = useState(false);
+  const [appendNoteText, setAppendNoteText] = useState('');
+  const [isAppendingNote, setIsAppendingNote] = useState(false);
 
   // User confirmed/overridden complaint values
   const [category, setCategory] = useState<ComplaintCategory>('Other');
@@ -79,9 +81,10 @@ export function NewComplaintPage() {
 
     setAnalyzingText(true);
     setCheckingDuplicates(true);
+    setOverrideDuplicate(false);
 
     try {
-      // 1. Text Analysis with Smart Fallback
+      // 1. Classification
       let aiData: AIAnalysisData;
       try {
         const textResponse = await analyzeComplaint({
@@ -91,7 +94,7 @@ export function NewComplaintPage() {
         });
         aiData = textResponse.data;
       } catch (apiErr) {
-        console.warn('Backend API analysis fallback to smart classifier:', apiErr);
+        console.warn('Backend API analysis fallback:', apiErr);
         aiData = getLocalSmartClassification(title.trim(), description.trim(), location.trim());
       }
 
@@ -107,7 +110,7 @@ export function NewComplaintPage() {
         setDepartment(aiData.department);
       }
 
-      // 2. Duplicate Detection with Fallback
+      // 2. AI Semantic Duplicate Detection
       try {
         const existing = await getAllComplaints();
         const activeExisting = existing.filter((c) => c.status !== 'RESOLVED' && c.status !== 'REJECTED');
@@ -124,17 +127,17 @@ export function NewComplaintPage() {
           })),
         });
 
-        if (dupResponse.data?.hasSimilarComplaints) {
-          setDuplicateMatches(dupResponse.data.similarComplaints);
+        if (dupResponse.data) {
+          setDuplicateResult(dupResponse.data);
         } else {
-          setDuplicateMatches([]);
+          setDuplicateResult(null);
         }
       } catch (dupErr) {
         console.warn('Duplicate check warning:', dupErr);
-        setDuplicateMatches([]);
+        setDuplicateResult(null);
       }
     } catch (err: any) {
-      console.warn('Analysis handler warning, executing smart classifier:', err);
+      console.warn('Analysis execution warning:', err);
       const fallback = getLocalSmartClassification(title.trim(), description.trim(), location.trim());
       setAiAnalysis(fallback);
       setCategory(fallback.category as ComplaintCategory);
@@ -143,6 +146,28 @@ export function NewComplaintPage() {
     } finally {
       setAnalyzingText(false);
       setCheckingDuplicates(false);
+    }
+  };
+
+  const handleAddInfoToExisting = async () => {
+    if (!duplicateResult?.duplicateComplaintId || !user || !userProfile) return;
+    const note = appendNoteText.trim() || `Additional update from student: ${description.trim()}`;
+
+    setIsAppendingNote(true);
+    try {
+      await updateComplaintStatus(
+        duplicateResult.duplicateComplaintId,
+        'SUBMITTED',
+        `[Student Additional Report] ${note}`,
+        userProfile.name || 'Student',
+        'student'
+      );
+      navigate(`/complaints/${duplicateResult.duplicateComplaintId}`);
+    } catch (err: any) {
+      console.error('Failed to append information:', err);
+      setError('Failed to update existing complaint.');
+    } finally {
+      setIsAppendingNote(false);
     }
   };
 
@@ -157,6 +182,12 @@ export function NewComplaintPage() {
 
     if (!title.trim() || !description.trim() || !location.trim()) {
       setError('Please complete all required fields (Title, Description, Location).');
+      return;
+    }
+
+    // Intercept if AI detected a true duplicate and student hasn't clicked "Submit as New Complaint"
+    if (duplicateResult?.isDuplicate && !overrideDuplicate) {
+      setError('AI detected a likely duplicate complaint. Please review the duplicate warning below or click "Submit as New Complaint" to proceed.');
       return;
     }
 
@@ -184,8 +215,8 @@ export function NewComplaintPage() {
               reason: aiAnalysis.reason,
             }
           : null,
-        duplicateOf: selectedDuplicateId || null,
-        duplicateGroupId: selectedDuplicateId ? `group_${selectedDuplicateId}` : null,
+        duplicateOf: duplicateResult?.duplicateComplaintId || null,
+        duplicateGroupId: duplicateResult?.duplicateComplaintId ? `group_${duplicateResult.duplicateComplaintId}` : null,
         createdAt: now,
         updatedAt: now,
         resolvedAt: null,
@@ -215,7 +246,7 @@ export function NewComplaintPage() {
 
         {error && (
           <div className="p-4 rounded-xl bg-red-900/40 border border-red-700 text-red-300 text-sm space-y-1">
-            <span className="font-bold block">Submission Warning / Error:</span>
+            <span className="font-bold block">Submission Alert:</span>
             <p>{error}</p>
           </div>
         )}
@@ -287,55 +318,89 @@ export function NewComplaintPage() {
             </div>
           </div>
 
-          {/* AI Duplicate Warning Card */}
-          {duplicateMatches.length > 0 && (
-            <div className="bg-amber-950/30 border border-amber-700/60 rounded-xl p-5 shadow-xl space-y-3">
-              <div className="flex items-center justify-between border-b border-amber-800/60 pb-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
-                  ⚠️ Similar Complaints Already Exist in this Location
-                </span>
-                <span className="text-xs px-2 py-0.5 rounded bg-amber-900 text-amber-200 font-bold">
-                  {duplicateMatches.length} Match(es)
+          {/* AI Semantic Duplicate Detection Card */}
+          {duplicateResult?.isDuplicate && (
+            <div className="bg-amber-950/40 border-2 border-amber-500 rounded-xl p-6 shadow-2xl space-y-4 animate-in fade-in">
+              <div className="flex items-center justify-between border-b border-amber-700/80 pb-3">
+                <div className="flex items-center space-x-2">
+                  <span className="text-xl">⚠️</span>
+                  <h3 className="text-sm font-black uppercase tracking-wider text-amber-200">
+                    POSSIBLE DUPLICATE FOUND
+                  </h3>
+                </div>
+                <span className="text-xs px-2.5 py-1 rounded bg-amber-900 border border-amber-600 text-amber-100 font-mono font-bold">
+                  AI Confidence: {Math.round((duplicateResult.confidence || 0.9) * 100)}%
                 </span>
               </div>
 
-              <p className="text-xs text-slate-300">
-                Gemini detected related active complaints. You can link your issue to an existing complaint group or proceed with submitting a new complaint.
-              </p>
+              <div className="space-y-2 text-xs text-slate-200">
+                <div>
+                  <span className="text-amber-400 font-bold uppercase tracking-wider text-[11px] block">
+                    Existing Complaint:
+                  </span>
+                  <span className="text-sm font-bold text-slate-100 block">
+                    {duplicateResult.duplicateComplaintId || 'Existing Complaint'} - "{duplicateResult.duplicateTitle || title}"
+                  </span>
+                </div>
 
-              <div className="space-y-2">
-                {duplicateMatches.map((match) => (
-                  <div
-                    key={match.complaintId}
-                    className={`p-3 rounded-lg border text-xs space-y-1 transition-colors ${
-                      selectedDuplicateId === match.complaintId
-                        ? 'bg-amber-900/40 border-amber-500 text-amber-100'
-                        : 'bg-slate-900/60 border-slate-700 text-slate-300'
-                    }`}
+                <div>
+                  <span className="text-amber-400 font-bold uppercase tracking-wider text-[11px] block">
+                    Why?
+                  </span>
+                  <p className="p-3 rounded bg-amber-900/30 border border-amber-800 text-amber-100 italic leading-relaxed">
+                    "{duplicateResult.reason}"
+                  </p>
+                </div>
+
+                {/* Additional Information Input if student wants to append */}
+                <div className="pt-2">
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Add note to existing complaint (Optional):
+                  </label>
+                  <input
+                    type="text"
+                    value={appendNoteText}
+                    onChange={(e) => setAppendNoteText(e.target.value)}
+                    placeholder="e.g. Also happening in afternoon class today"
+                    className="w-full px-3 py-1.5 rounded bg-slate-900 border border-slate-700 text-slate-100 text-xs"
+                  />
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-col sm:flex-row items-center gap-2 pt-2 border-t border-amber-800/60">
+                {duplicateResult.duplicateComplaintId && (
+                  <button
+                    type="button"
+                    onClick={() => window.open(`/complaints/${duplicateResult.duplicateComplaintId}`, '_blank')}
+                    className="w-full sm:w-auto px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs rounded-lg border border-slate-600 transition-colors"
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-100">{match.title}</span>
-                      <span className="font-mono text-amber-400">
-                        {Math.round(match.similarityScore * 100)}% Match
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 italic">"{match.reason}"</p>
+                    🔍 View Existing Complaint
+                  </button>
+                )}
 
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSelectedDuplicateId(
-                          selectedDuplicateId === match.complaintId ? null : match.complaintId
-                        )
-                      }
-                      className="mt-1 px-3 py-1 bg-amber-800/60 hover:bg-amber-800 text-amber-200 rounded text-[11px] font-semibold transition-colors"
-                    >
-                      {selectedDuplicateId === match.complaintId
-                        ? '✓ Linked as Duplicate'
-                        : 'Link to this Complaint Group'}
-                    </button>
-                  </div>
-                ))}
+                {duplicateResult.duplicateComplaintId && (
+                  <button
+                    type="button"
+                    onClick={handleAddInfoToExisting}
+                    disabled={isAppendingNote}
+                    className="w-full sm:w-auto px-3.5 py-2 bg-amber-700 hover:bg-amber-600 text-white font-bold text-xs rounded-lg shadow transition-colors disabled:opacity-50"
+                  >
+                    {isAppendingNote ? 'Adding Information...' : '➕ Add Information to Existing Complaint'}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setOverrideDuplicate(true)}
+                  className={`w-full sm:w-auto px-3.5 py-2 text-xs font-bold rounded-lg border transition-colors ${
+                    overrideDuplicate
+                      ? 'bg-emerald-800 text-emerald-100 border-emerald-600'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-600'
+                  }`}
+                >
+                  {overrideDuplicate ? '✓ Will Submit as New Complaint' : 'Submit as New Complaint'}
+                </button>
               </div>
             </div>
           )}

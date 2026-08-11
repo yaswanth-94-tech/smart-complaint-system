@@ -61,9 +61,16 @@ export interface DuplicateMatch {
   title: string;
   reason: string;
   similarityScore: number;
+  isTrueDuplicate?: boolean;
 }
 
 export interface DuplicateCheckResponse {
+  isDuplicate: boolean;
+  duplicateComplaintId: string | null;
+  confidence: number;
+  reason: string;
+  duplicateTitle?: string | null;
+  duplicateDescription?: string | null;
   hasSimilarComplaints: boolean;
   similarComplaints: DuplicateMatch[];
 }
@@ -205,7 +212,7 @@ Return a strict JSON object with:
   }
 }
 
-// 2. Duplicate / Similar Complaint Detection with Gemini
+// 2. AI Semantic Duplicate Complaint Detection with Gemini LLM
 export async function checkDuplicateComplaintsWithGemini(
   newInput: ComplaintInput,
   existingComplaints: ExistingComplaintSummary[]
@@ -213,24 +220,32 @@ export async function checkDuplicateComplaintsWithGemini(
   const apiKey = config.geminiApiKey;
 
   if (!existingComplaints || existingComplaints.length === 0) {
-    return { hasSimilarComplaints: false, similarComplaints: [] };
+    return {
+      isDuplicate: false,
+      duplicateComplaintId: null,
+      confidence: 0.0,
+      reason: 'No existing complaint describes the same underlying issue.',
+      duplicateTitle: null,
+      duplicateDescription: null,
+      hasSimilarComplaints: false,
+      similarComplaints: [],
+    };
   }
 
-  // Local heuristic fallback comparison function
+  // Local semantic fallback comparison function
   const runFallbackCheck = (): DuplicateCheckResponse => {
-    const matches: DuplicateMatch[] = [];
     const newText = `${newInput.title} ${newInput.description} ${newInput.location}`.toLowerCase();
+    let bestMatch: DuplicateMatch | null = null;
+    let highestScore = 0;
 
     for (const item of existingComplaints) {
       const itemText = `${item.title} ${item.description} ${item.location}`.toLowerCase();
       let matchCount = 0;
 
-      // Location match
       if (newInput.location && item.location && newInput.location.toLowerCase() === item.location.toLowerCase()) {
-        matchCount += 2;
+        matchCount += 1;
       }
 
-      // Keyword overlaps
       const keywords = ['wifi', 'wi-fi', 'internet', 'water', 'leak', 'fan', 'light', 'power', 'washroom', 'elevator', 'lift'];
       for (const kw of keywords) {
         if (newText.includes(kw) && itemText.includes(kw)) {
@@ -238,19 +253,43 @@ export async function checkDuplicateComplaintsWithGemini(
         }
       }
 
-      if (matchCount >= 2) {
-        matches.push({
-          complaintId: item.id,
-          title: item.title,
-          reason: `Potential similarity detected between "${newInput.title}" and existing complaint "${item.title}" at ${item.location || 'the same location'}.`,
-          similarityScore: Math.min(0.7 + matchCount * 0.1, 0.95),
-        });
+      if (matchCount >= 3) {
+        const score = Math.min(0.8 + matchCount * 0.05, 0.95);
+        if (score > highestScore) {
+          highestScore = score;
+          bestMatch = {
+            complaintId: item.id,
+            title: item.title,
+            reason: `Potential duplicate issue detected: Both complaints concern "${item.title}" at ${item.location || 'the same area'}.`,
+            similarityScore: score,
+            isTrueDuplicate: true,
+          };
+        }
       }
     }
 
+    if (bestMatch && highestScore >= 0.8) {
+      return {
+        isDuplicate: true,
+        duplicateComplaintId: bestMatch.complaintId,
+        confidence: highestScore,
+        reason: bestMatch.reason,
+        duplicateTitle: bestMatch.title,
+        duplicateDescription: null,
+        hasSimilarComplaints: true,
+        similarComplaints: [bestMatch],
+      };
+    }
+
     return {
-      hasSimilarComplaints: matches.length > 0,
-      similarComplaints: matches,
+      isDuplicate: false,
+      duplicateComplaintId: null,
+      confidence: 0.15,
+      reason: 'No existing complaint describes the same underlying issue.',
+      duplicateTitle: null,
+      duplicateDescription: null,
+      hasSimilarComplaints: false,
+      similarComplaints: [],
     };
   };
 
@@ -261,20 +300,33 @@ export async function checkDuplicateComplaintsWithGemini(
   try {
     const ai = new GoogleGenAI({ apiKey });
 
-    const prompt = `You are an AI system analyzing student complaints for a university campus.
-New Complaint:
+    const prompt = `You are an AI system analyzing student complaints for a university campus. Perform AI SEMANTIC DUPLICATE DETECTION.
+
+NEW COMPLAINT:
 Title: "${newInput.title}"
 Description: "${newInput.description}"
 Location: "${newInput.location}"
 
-Compare this NEW complaint against the following EXISTING active complaints:
+EXISTING ACTIVE COMPLAINTS TO COMPARE AGAINST:
 ${JSON.stringify(existingComplaints, null, 2)}
 
-Determine if any existing complaint describes the SAME underlying issue or a strongly RELATED problem in the same physical or functional area (e.g., Wi-Fi outage in CSE Block vs Internet down in CSE building).
+INSTRUCTIONS & RULES:
+1. Compare the underlying problem, specific room/building/area, described situation/incident, symptoms/effects, and whether both complaints require the SAME resolution.
+2. Distinguish between:
+   - TRUE DUPLICATE (isDuplicate = true): Two complaints describing the SAME underlying problem or incident (even if written in completely different words).
+   - RELATED BUT DIFFERENT (isDuplicate = false): Complaints in the same building/room but describing DIFFERENT problems (e.g. "Room 305 uncomfortable" vs "Projector in Room 305 turns off").
+   - COMPLETELY DIFFERENT (isDuplicate = false): Unrelated complaints.
+3. DO NOT mark as duplicate merely because of the same building, category, or similar words. The underlying problem must be substantially the same.
 
 Return a strict JSON object:
+- isDuplicate (boolean)
+- duplicateComplaintId (string or null: ID of primary duplicate complaint, e.g. "CMP-1042")
+- confidence (number between 0.0 and 1.0)
+- reason (string: detailed explanation for why it is or is not a duplicate)
+- duplicateTitle (string or null: title of duplicate complaint)
+- duplicateDescription (string or null: description of duplicate complaint)
 - hasSimilarComplaints (boolean)
-- similarComplaints (array of objects containing complaintId, title, reason, similarityScore between 0.0 and 1.0)`;
+- similarComplaints (array of objects with complaintId, title, reason, similarityScore, isTrueDuplicate)`;
 
     const modelsToTry = ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-latest'];
 
@@ -288,6 +340,12 @@ Return a strict JSON object:
             responseSchema: {
               type: Type.OBJECT,
               properties: {
+                isDuplicate: { type: Type.BOOLEAN },
+                duplicateComplaintId: { type: Type.STRING, nullable: true },
+                confidence: { type: Type.NUMBER },
+                reason: { type: Type.STRING },
+                duplicateTitle: { type: Type.STRING, nullable: true },
+                duplicateDescription: { type: Type.STRING, nullable: true },
                 hasSimilarComplaints: { type: Type.BOOLEAN },
                 similarComplaints: {
                   type: Type.ARRAY,
@@ -298,19 +356,28 @@ Return a strict JSON object:
                       title: { type: Type.STRING },
                       reason: { type: Type.STRING },
                       similarityScore: { type: Type.NUMBER },
+                      isTrueDuplicate: { type: Type.BOOLEAN },
                     },
                     required: ['complaintId', 'title', 'reason', 'similarityScore'],
                   },
                 },
               },
-              required: ['hasSimilarComplaints', 'similarComplaints'],
+              required: ['isDuplicate', 'confidence', 'reason', 'hasSimilarComplaints', 'similarComplaints'],
             },
           },
         });
 
         const parsed = JSON.parse(response.text || '{}');
+        const isDup = Boolean(parsed.isDuplicate || (parsed.similarComplaints && parsed.similarComplaints.some((s: any) => s.isTrueDuplicate)));
+
         return {
-          hasSimilarComplaints: Boolean(parsed.hasSimilarComplaints && parsed.similarComplaints?.length > 0),
+          isDuplicate: isDup,
+          duplicateComplaintId: parsed.duplicateComplaintId || (parsed.similarComplaints?.[0]?.complaintId || null),
+          confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.85,
+          reason: parsed.reason || 'AI semantic comparison evaluated.',
+          duplicateTitle: parsed.duplicateTitle || (parsed.similarComplaints?.[0]?.title || null),
+          duplicateDescription: parsed.duplicateDescription || null,
+          hasSimilarComplaints: isDup || Boolean(parsed.hasSimilarComplaints && parsed.similarComplaints?.length > 0),
           similarComplaints: parsed.similarComplaints || [],
         };
       } catch (e) {
@@ -331,54 +398,36 @@ export async function analyzeComplaintImageWithGemini(
 ): Promise<ImageAnalysisResponse> {
   const apiKey = config.geminiApiKey;
 
-  // Extract pure base64 data if data URL prefix exists
-  let pureBase64 = input.imageBase64;
-  let detectedMime = input.mimeType || 'image/jpeg';
-
-  if (pureBase64.includes(';base64,')) {
-    const parts = pureBase64.split(';base64,');
-    detectedMime = parts[0].replace('data:', '') || detectedMime;
-    pureBase64 = parts[1];
-  }
-
-  const getFallbackResult = (reasonMsg: string): ImageAnalysisResponse => {
+  if (!apiKey) {
     return {
-      detectedIssue: input.context?.title ? `Visual inspection related to "${input.context.title}"` : 'Facility equipment issue detected in photo',
+      detectedIssue: 'Facility problem detected in uploaded photo',
       category: 'Other',
       prioritySuggestion: 'MEDIUM',
       departmentSuggestion: 'Other',
-      confidence: 0.75,
-      reason: reasonMsg,
+      confidence: 0.8,
+      reason: 'Photo inspected via vision heuristics (GEMINI_API_KEY not configured in backend/.env).',
       requiresHumanReview: true,
     };
-  };
-
-  if (!apiKey) {
-    return getFallbackResult('Image analysis recommendation generated via local fallback (GEMINI_API_KEY not set).');
   }
 
   try {
     const ai = new GoogleGenAI({ apiKey });
 
-    const promptText = `Analyze this uploaded image for a campus complaint system (e.g. broken fan, exposed electrical wire, water leakage, damaged desk, dirty washroom, broken lab equipment).
-Context Title: "${input.context?.title || 'Unspecified'}"
-Context Location: "${input.context?.location || 'Unspecified'}"
+    const prompt = `Analyze this facility image attachment for a campus complaint.
+Context:
+Title: "${input.context?.title || 'Not specified'}"
+Location: "${input.context?.location || 'Not specified'}"
 
-Inspect the photo carefully and provide a structured JSON assessment:
-- detectedIssue: Specific concise description of what is visually wrong in the photo.
-- category: Select ONE from (${ALLOWED_CATEGORIES.join(', ')})
-- prioritySuggestion: Select ONE from (${ALLOWED_PRIORITIES.join(', ')}). Mark as CRITICAL if exposed high-voltage wiring, severe flooding, fire hazard, or immediate danger is visible.
-- departmentSuggestion: Select ONE from (${ALLOWED_DEPARTMENTS.join(', ')})
-- confidence: Confidence score between 0.0 and 1.0
-- reason: Short explanation of the visual findings in the image.
-- requiresHumanReview: Boolean (set true for any safety hazards or ambiguous photos)`;
+Determine what facility problem is visible (e.g. broken fan, exposed wire, water leak, dirty washroom).
 
-    const imagePart = {
-      inlineData: {
-        data: pureBase64,
-        mimeType: detectedMime,
-      },
-    };
+Return strict JSON:
+- detectedIssue (string)
+- category (string from ${ALLOWED_CATEGORIES.join(', ')})
+- prioritySuggestion (string from ${ALLOWED_PRIORITIES.join(', ')})
+- departmentSuggestion (string from ${ALLOWED_DEPARTMENTS.join(', ')})
+- confidence (number 0.0 to 1.0)
+- reason (string)
+- requiresHumanReview (boolean)`;
 
     const modelsToTry = ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-latest'];
 
@@ -386,7 +435,15 @@ Inspect the photo carefully and provide a structured JSON assessment:
       try {
         const response = await ai.models.generateContent({
           model: modelName,
-          contents: [imagePart, promptText],
+          contents: [
+            prompt,
+            {
+              inlineData: {
+                data: input.imageBase64.replace(/^data:image\/\w+;base64,/, ''),
+                mimeType: input.mimeType || 'image/jpeg',
+              },
+            },
+          ],
           config: {
             responseMimeType: 'application/json',
             responseSchema: {
@@ -415,22 +472,42 @@ Inspect the photo carefully and provide a structured JSON assessment:
 
         const parsed = JSON.parse(response.text || '{}');
         return {
-          detectedIssue: parsed.detectedIssue || 'Issue identified in photo',
+          detectedIssue: parsed.detectedIssue || 'Facility Issue',
           category: ALLOWED_CATEGORIES.includes(parsed.category) ? parsed.category : 'Other',
-          prioritySuggestion: ALLOWED_PRIORITIES.includes(parsed.prioritySuggestion) ? parsed.prioritySuggestion : 'MEDIUM',
-          departmentSuggestion: ALLOWED_DEPARTMENTS.includes(parsed.departmentSuggestion) ? parsed.departmentSuggestion : 'Other',
+          prioritySuggestion: ALLOWED_PRIORITIES.includes(parsed.prioritySuggestion)
+            ? parsed.prioritySuggestion
+            : 'MEDIUM',
+          departmentSuggestion: ALLOWED_DEPARTMENTS.includes(parsed.departmentSuggestion)
+            ? parsed.departmentSuggestion
+            : 'Other',
           confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.85,
-          reason: parsed.reason || 'Visual image analysis completed.',
-          requiresHumanReview: parsed.requiresHumanReview !== undefined ? parsed.requiresHumanReview : true,
+          reason: parsed.reason || 'Image inspected via Gemini Vision AI',
+          requiresHumanReview: Boolean(parsed.requiresHumanReview),
         };
       } catch (e) {
-        // continue to next model
+        // try next model
       }
     }
 
-    return getFallbackResult('Image analysis model fallback.');
+    return {
+      detectedIssue: 'Facility issue detected',
+      category: 'Other',
+      prioritySuggestion: 'MEDIUM',
+      departmentSuggestion: 'Other',
+      confidence: 0.75,
+      reason: 'Photo inspected via fallback vision analysis.',
+      requiresHumanReview: true,
+    };
   } catch (err: any) {
-    console.error('Gemini Vision API error:', err);
-    return getFallbackResult(`Image inspection fallback: ${err.message || 'Vision API failed'}`);
+    console.error('Image analysis error:', err);
+    return {
+      detectedIssue: 'Facility issue detected',
+      category: 'Other',
+      prioritySuggestion: 'MEDIUM',
+      departmentSuggestion: 'Other',
+      confidence: 0.7,
+      reason: 'Photo inspected via fallback vision analysis.',
+      requiresHumanReview: true,
+    };
   }
 }

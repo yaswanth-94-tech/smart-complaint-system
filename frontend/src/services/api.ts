@@ -39,6 +39,7 @@ export interface CheckDuplicatesResponse {
     hasSimilarComplaints: boolean;
     similarComplaints: DuplicateMatchItem[];
   };
+  error?: string;
 }
 
 export interface ImageAnalysisData {
@@ -54,6 +55,7 @@ export interface ImageAnalysisData {
 export interface AnalyzeImageResponse {
   success: boolean;
   data: ImageAnalysisData;
+  error?: string;
 }
 
 // Helper to safely parse JSON response and avoid 'Unexpected end of JSON input'
